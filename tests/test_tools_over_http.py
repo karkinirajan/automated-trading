@@ -22,7 +22,7 @@ from agent_tools import tool_get_price_local as price_tool
 from agent_tools import tool_jina_search as search_tool
 from agent_tools import tool_trade as trade_tool
 from tests.helpers import bar, read_positions, write_positions, write_prices
-from tools.agent_context import AGENT_HEADER
+from tools.agent_context import AGENT_HEADER, TOKEN_HEADER
 from tools.general_tools import write_config_value
 
 
@@ -243,3 +243,31 @@ class TestWithoutOrWithABadHeader:
 
         assert "TODAY_DATE is not set" in asyncio.run(go())["error"]  # no clock for this agent: nothing is served
         assert not (world / "agent_data" / "nobody").exists()
+
+
+class TestSharedSecretOverHttp:
+    def test_agents_send_the_token_and_are_served(self, servers, world, monkeypatch):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret")
+        agent, alice = tools_for("alice", servers)
+        assert all(c["headers"] == {AGENT_HEADER: "alice", TOKEN_HEADER: "s3cret"} for c in agent.mcp_config.values())
+        assert call(alice["buy"], symbol="AAPL", amount=1) == {"CASH": 890.0, "AAPL": 1}
+
+    def test_without_a_configured_token_no_token_header_is_sent(self, servers):
+        agent = BaseAgent(signature="alice", basemodel="m", mcp_config=servers, openai_api_key="k")
+        assert all(TOKEN_HEADER not in c["headers"] for c in agent.mcp_config.values())
+
+    @pytest.mark.parametrize("headers", [{}, {TOKEN_HEADER: "wrong"}])
+    def test_a_caller_without_the_token_cannot_trade_or_read_prices(self, servers, world, monkeypatch, headers):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret")
+        before = read_positions(world / "agent_data" / "alice")
+
+        async def go():
+            async with Client(StreamableHttpTransport(servers["trade"]["url"], headers={AGENT_HEADER: "alice", **headers})) as trade:
+                with pytest.raises(ToolError, match="requires the MCP token"):
+                    await trade.call_tool("buy", {"symbol": "AAPL", "amount": 1})
+            async with Client(StreamableHttpTransport(servers["stock_local"]["url"], headers={AGENT_HEADER: "alice", **headers})) as prices:
+                with pytest.raises(ToolError, match="requires the MCP token"):
+                    await prices.call_tool("get_price_local", {"symbol": "AAPL", "date": "2025-10-01"})
+
+        asyncio.run(go())
+        assert read_positions(world / "agent_data" / "alice") == before

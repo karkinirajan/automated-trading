@@ -3,7 +3,7 @@ import json
 import pytest
 
 from tools import agent_context
-from tools.agent_context import AGENT_HEADER, calling_agent, runtime_env_path_override
+from tools.agent_context import AGENT_HEADER, TOKEN_HEADER, calling_agent, runtime_env_path_override
 from tools.general_tools import get_config_value, write_config_value
 
 
@@ -85,3 +85,47 @@ class TestCallingAgent:
     def test_the_header_name_is_lowercase_as_fastmcp_reports_it(self):
         assert AGENT_HEADER == AGENT_HEADER.lower()
         assert agent_context.RUNTIME_ENV_NAME == ".runtime_env.json"
+
+
+class TestSharedSecret:
+    def test_without_a_configured_token_none_is_asked_for(self, headers):
+        with calling_agent() as caller:
+            assert caller is None
+
+    def test_with_a_token_the_right_one_is_accepted(self, headers, monkeypatch):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret")
+        headers.update({TOKEN_HEADER: "s3cret", AGENT_HEADER: "alice"})
+        with calling_agent() as caller:
+            assert caller == "alice"
+
+    @pytest.mark.parametrize("sent", [None, "", "wrong", "s3cret ", "S3CRET", "s3cre"])
+    def test_a_missing_or_wrong_token_is_refused(self, headers, monkeypatch, sent):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret")
+        headers[AGENT_HEADER] = "alice"
+        if sent is not None:
+            headers[TOKEN_HEADER] = sent
+        with pytest.raises(PermissionError, match="requires the MCP token"), calling_agent():
+            pass
+        assert runtime_env_path_override() is None
+
+    def test_the_token_is_required_even_when_no_agent_is_named(self, headers, monkeypatch):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret")
+        with pytest.raises(PermissionError), calling_agent():
+            pass
+
+    def test_an_empty_configured_token_means_none_is_required(self, headers, monkeypatch):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "")
+        with calling_agent():
+            pass
+
+    def test_a_non_ascii_token_is_compared_without_error(self, headers, monkeypatch):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "sécret-日本")
+        headers[TOKEN_HEADER] = "sécret-日本"
+        with calling_agent():
+            pass
+
+    def test_the_error_does_not_reveal_the_token(self, headers, monkeypatch):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret-value")
+        with pytest.raises(PermissionError) as exc, calling_agent():
+            pass
+        assert "s3cret-value" not in str(exc.value)

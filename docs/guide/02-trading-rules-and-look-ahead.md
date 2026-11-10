@@ -49,4 +49,4 @@ A daily price for the current day stays open-only even in an hourly run (the day
 
 * A model's **training data** already contains the period it is replaying; no tool can make it forget. A good replay result is weak evidence.
 * A page whose publication date Jina reports wrongly can still be shown, and a page published earlier may have been edited later.
-* The tool servers have no authentication and listen on `127.0.0.1` unless `MCP_HOST` says otherwise. Anything on the machine that can reach the port can place orders for any agent that has a folder: do not expose them.
+* The tool servers listen on `127.0.0.1`. Without `MCP_AUTH_TOKEN`, any process on the machine that can reach the port can place orders for any agent that has a folder, so on a shared machine set the token (the servers will not listen on another address without it). The token is a shared secret sent in a header over plain HTTP: it keeps strangers out, not someone who can read the traffic, so do not send it across an untrusted network.

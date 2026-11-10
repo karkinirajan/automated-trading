@@ -75,7 +75,8 @@ Environment variables (a `.env` file is read automatically):
 | `ALPHAADVANTAGE_API_KEY` | Price downloads (`make data`). |
 | `JINA_API_KEY` | The web-search tool. |
 | `MATH_HTTP_PORT`, `SEARCH_HTTP_PORT`, `TRADE_HTTP_PORT`, `GETPRICE_HTTP_PORT` | Tool server ports, 8000 to 8003 by default. |
-| `MCP_HOST` | Address the tool servers listen on. Default `127.0.0.1`: they can place trades and have no authentication, so only widen it on a network you trust. |
+| `MCP_HOST` | Address the tool servers listen on. Default `127.0.0.1`. The servers can place trades for any agent that has a folder, so they **refuse to listen on any other address unless `MCP_AUTH_TOKEN` is set**. |
+| `MCP_AUTH_TOKEN` | Optional on loopback, required elsewhere: a long random secret (`python -c "import secrets; print(secrets.token_urlsafe(32))"`), the same for the servers and the agents (both read `.env`). When set, a trade, price or search call without it is refused. |
 | `INIT_DATE`, `END_DATE` | Override the configured date range. |
 
 The placeholder text in `default_config.json` for `openai_base_url` and `openai_api_key` of the (disabled) Claude entry is not a value: delete those two keys to use the environment, or the entry will use the text as the endpoint.

@@ -191,10 +191,33 @@ class TestRunServer:
 
     def test_the_host_and_port_can_be_set(self, monkeypatch):
         monkeypatch.setenv("MCP_HOST", "0.0.0.0")
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret")
         monkeypatch.setenv("SOME_PORT", "9999")
         recorder = self.Recorder()
         run_server(recorder, "SOME_PORT", 8123)
         assert recorder.kw["host"] == "0.0.0.0" and recorder.kw["port"] == 9999
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+    def test_loopback_addresses_need_no_token(self, monkeypatch, host):
+        monkeypatch.setenv("MCP_HOST", host)
+        recorder = self.Recorder()
+        run_server(recorder, "SOME_PORT", 8123)
+        assert recorder.kw["host"] == host
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "::", "example.com"])
+    def test_any_other_address_is_refused_without_a_token(self, monkeypatch, host):
+        monkeypatch.setenv("MCP_HOST", host)
+        recorder = self.Recorder()
+        with pytest.raises(RuntimeError, match="set MCP_AUTH_TOKEN"):
+            run_server(recorder, "SOME_PORT", 8123)
+        assert recorder.kw is None  # nothing was started
+
+    def test_another_address_is_allowed_with_a_token(self, monkeypatch):
+        monkeypatch.setenv("MCP_HOST", "0.0.0.0")
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cret")
+        recorder = self.Recorder()
+        run_server(recorder, "SOME_PORT", 8123)
+        assert recorder.kw["host"] == "0.0.0.0"
 
     def test_a_port_that_is_not_a_number_is_an_error(self, monkeypatch):
         monkeypatch.setenv("SOME_PORT", "http")

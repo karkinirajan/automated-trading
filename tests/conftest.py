@@ -12,7 +12,7 @@ def project(monkeypatch, tmp_path) -> Path:
     (data_dir / "agent_data").mkdir(parents=True)
     monkeypatch.setattr(paths, "DATA_DIR", data_dir)
     monkeypatch.setattr(paths, "AGENT_DATA_DIR", data_dir / "agent_data")
-    for name in ("SIGNATURE", "TODAY_DATE", "IF_TRADE", "RUNTIME_ENV_PATH", "MCP_HOST", "INIT_DATE", "END_DATE", "JINA_API_KEY", "ALPHAADVANTAGE_API_KEY"):
+    for name in ("SIGNATURE", "TODAY_DATE", "IF_TRADE", "RUNTIME_ENV_PATH", "MCP_HOST", "MCP_AUTH_TOKEN", "INIT_DATE", "END_DATE", "JINA_API_KEY", "ALPHAADVANTAGE_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("RUNTIME_ENV_PATH", str(tmp_path / "runtime_env.json"))
     monkeypatch.chdir(tmp_path)

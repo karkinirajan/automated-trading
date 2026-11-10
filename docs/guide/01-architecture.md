@@ -35,6 +35,8 @@ Each agent has a settings file, `data/agent_data/<signature>/.runtime_env.json`,
 
 The tool servers are started once and shared by every model, so they cannot learn who is calling from their own environment. Each agent therefore sends its signature in an `X-Agent-Signature` header on every request, and a tool wraps its work in `calling_agent()` (`tools/agent_context.py`), which points the settings store at that agent's file for the length of the call. The signature is checked to be a plain folder name (`tools/paths.safe_signature`) before it is used in a path. A request without the header falls back to the `SIGNATURE` / `RUNTIME_ENV_PATH` of the server's own environment, which is only right when a single agent uses the servers.
 
+The header names an agent; it does not prove who sent it. With `MCP_AUTH_TOKEN` set, the agents also send it in `X-MCP-Token` and a trade, price or search call that lacks it is refused (compared in constant time); without it the servers are meant for the loopback address only, and `run_server` refuses any other `MCP_HOST` unless the token is set.
+
 ## Where the code lives
 
 | Module | Does |

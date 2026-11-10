@@ -22,7 +22,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from prompts.agent_prompt import STOP_SIGNAL, get_agent_system_prompt
-from tools.agent_context import AGENT_HEADER
+from tools.agent_context import AGENT_HEADER, TOKEN_HEADER, TOKEN_VARIABLE
 from tools.constants import NASDAQ_100_SYMBOLS
 from tools.general_tools import extract_conversation, extract_tool_messages, get_config_value, write_config_value
 from tools.paths import safe_signature
@@ -117,8 +117,13 @@ class BaseAgent:
     def _with_agent_header(self, config: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """A copy of the MCP connection settings in which every connection names this agent in a header.
 
-        The tool servers are shared by all models, so this header is how a server knows whose account, date and settings a call is for."""
-        return {name: {**connection, "headers": {**(connection.get("headers") or {}), AGENT_HEADER: self.signature}} for name, connection in config.items()}
+        The tool servers are shared by all models, so this header is how a server knows whose account, date and settings a call is for. When MCP_AUTH_TOKEN is
+        set, the secret the servers then require goes with it."""
+        identity = {AGENT_HEADER: self.signature}
+        token = os.getenv(TOKEN_VARIABLE)
+        if token:
+            identity[TOKEN_HEADER] = token
+        return {name: {**connection, "headers": {**(connection.get("headers") or {}), **identity}} for name, connection in config.items()}
 
     def _get_default_mcp_config(self) -> dict[str, dict[str, Any]]:
         """Get default MCP configuration"""

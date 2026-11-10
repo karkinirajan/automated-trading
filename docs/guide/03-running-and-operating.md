@@ -7,7 +7,7 @@ make setup                 # uv sync --locked: Python 3.14 from .python-version,
 cp .env.example .env       # then edit .env
 ```
 
-Keys go in `.env` (never committed): `OPENAI_API_KEY` and optionally `OPENAI_API_BASE` for the model endpoint, `ALPHAADVANTAGE_API_KEY` for downloads, `JINA_API_KEY` for search. A model entry in the configuration can set its own `openai_base_url` and `openai_api_key`, which win over the environment.
+Keys go in `.env` (never committed): `OPENAI_API_KEY` and optionally `OPENAI_API_BASE` for the model endpoint, `ALPHAADVANTAGE_API_KEY` for downloads, `JINA_API_KEY` for search. A model entry in the configuration can set its own `openai_base_url` and `openai_api_key`, which win over the environment. Optionally add `MCP_AUTH_TOKEN` (see the README); the servers and the agents read the same `.env`, so one value covers both.
 
 ## Prices
 
@@ -49,4 +49,6 @@ Add an entry to `models` in the configuration with a `name`, the provider-qualif
 | `TODAY_DATE is not set, so no price can be served` | A price was asked for outside a run, or for an agent that has no settings file. This is deliberate: without a clock, nothing is served. |
 | `No account position found for this date` | The agent has no position record for today or the previous trading day. |
 | `unsafe agent signature` | A signature is not a plain folder name. |
+| `requires the MCP token` | `MCP_AUTH_TOKEN` is set for the servers but not (or differently) for the agent: both read `.env`, so check that the agent process loads the same file. |
+| `refusing to listen on ...` | `MCP_HOST` is not a loopback address and `MCP_AUTH_TOKEN` is not set. |
 | `position locking needs a POSIX system` | Windows. |

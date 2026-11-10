@@ -29,8 +29,8 @@ Deduplication and structure: one runner, one `execute_trade`, one price-reading 
 | Gate | Result |
 |---|---|
 | `uv run ruff check .` | pass |
-| `uv run pytest -q` | 578 passed on Python 3.14 (3.12 and 3.11 also pass) |
-| Mutation check (`tests/mutation`) | 219 of 219 killed (the full run, about 11 minutes here, killed 218; the 219th had a pattern gone stale after a re-indent, was corrected and killed on its own) |
+| `uv run pytest -q` | 602 passed on Python 3.14 (3.12 and 3.11 also pass) |
+| Mutation check (`tests/mutation`) | 230 of 230 killed (227 in the last full run, about 12 minutes here; three patterns that had gone stale when the code they target was reshaped were corrected and run on their own) |
 | `uv audit` | no known vulnerabilities in 116 packages |
 | Secret scan of the diff and the new files (count only, `.env*` excluded) | 0 matches in the 47 modified or new files and 0 in all tracked files; `.env` is untracked and ignored (`.env.example` is tracked and was not read) |
 
