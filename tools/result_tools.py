@@ -1,29 +1,24 @@
-import os
 import json
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+import os
 import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
 
 # Add project root directory to Python path to allow running this file from subdirectories
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from tools.price_tools import (
-    get_yesterday_date, 
-    get_open_prices, 
-    get_yesterday_open_and_close_price,
-    get_today_init_position,
-    get_latest_position,
-    all_nasdaq_100_symbols
-)
-from tools.general_tools import get_config_value
+from tools.paths import agent_dir, merged_prices_file
+from tools.paths import position_file as _position_file
+from tools.price_access import parse_moment
+from tools.price_tools import all_nasdaq_100_symbols
 
 
-def calculate_portfolio_value(positions: Dict[str, float], prices: Dict[str, Optional[float]], cash: float = 0.0) -> float:
+def calculate_portfolio_value(positions: dict[str, float], prices: dict[str, float | None], cash: float = 0.0) -> float:
     """
     Calculate total portfolio value
     
@@ -48,7 +43,7 @@ def calculate_portfolio_value(positions: Dict[str, float], prices: Dict[str, Opt
     return total_value
 
 
-def get_available_date_range(signature: str) -> Tuple[str, str]:
+def get_available_date_range(signature: str) -> tuple[str, str]:
     """
     Get available data date range
     
@@ -58,9 +53,8 @@ def get_available_date_range(signature: str) -> Tuple[str, str]:
     Returns:
         Tuple of (earliest date, latest date) in YYYY-MM-DD format
     """
-    base_dir = Path(__file__).resolve().parents[1]
-    position_file = base_dir / "data" / "agent_data" / signature / "position" / "position.jsonl"
-    
+    position_file = _position_file(signature)
+
     if not position_file.exists():
         return "", ""
     
@@ -85,7 +79,7 @@ def get_available_date_range(signature: str) -> Tuple[str, str]:
     return dates[0], dates[-1]
 
 
-def get_daily_portfolio_values(signature: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, float]:
+def get_daily_portfolio_values(signature: str, start_date: str | None = None, end_date: str | None = None) -> dict[str, float]:
     """
     Get daily portfolio values
     
@@ -97,9 +91,8 @@ def get_daily_portfolio_values(signature: str, start_date: Optional[str] = None,
     Returns:
         Dictionary of daily portfolio values in format {date: portfolio_value}
     """
-    base_dir = Path(__file__).resolve().parents[1]
-    position_file = base_dir / "data" / "agent_data" / signature / "position" / "position.jsonl"
-    merged_file = base_dir / "data" / "merged.jsonl"
+    position_file = _position_file(signature)
+    merged_file = merged_prices_file()
     
     if not position_file.exists() or not merged_file.exists():
         return {}
@@ -160,39 +153,28 @@ def get_daily_portfolio_values(signature: str, start_date: Optional[str] = None,
                 positions_by_date[date] = []
             positions_by_date[date].append(record)
     
-    # For each date, sort records by id and take latest position
-    for date, records in positions_by_date.items():
-        if start_date and date < start_date:
-            continue
-        if end_date and date > end_date:
-            continue
-            
-        # Sort by id and take latest position
-        latest_record = max(records, key=lambda x: x.get("id", 0))
-        positions = latest_record.get("positions", {})
-        
-        # Get daily prices
-        daily_prices = {}
+    # Value each day with its closing prices. A day with no closing price for a stock (a market holiday, or the latest bar, whose close the merged file
+    # withholds) uses the stock's last known close instead of counting the holding as worth nothing, which showed up as a false crash in the portfolio.
+    last_close: dict[str, float] = {}
+    price_dates = sorted({d for series in price_data.values() for d in series} | set(positions_by_date))
+    for date in price_dates:
         for symbol in all_nasdaq_100_symbols:
-            if symbol in price_data:
-                symbol_prices = price_data[symbol]
-                if date in symbol_prices:
-                    price_info = symbol_prices[date]
-                    buy_price = price_info.get("1. buy price")
-                    sell_price = price_info.get("4. sell price")
-                    # Use closing (sell) price to calculate value
-                    if sell_price is not None:
-                        daily_prices[f'{symbol}_price'] = float(sell_price)
-        
-        # Calculate portfolio value
-        cash = positions.get("CASH", 0.0)
-        portfolio_value = calculate_portfolio_value(positions, daily_prices, cash)
-        daily_values[date] = portfolio_value
+            bar = price_data.get(symbol, {}).get(date)
+            sell_price = bar.get("4. sell price") if isinstance(bar, dict) else None
+            if sell_price is not None:
+                last_close[symbol] = float(sell_price)
+        records = positions_by_date.get(date)
+        if not records or (start_date and date < start_date) or (end_date and date > end_date):
+            continue
+        # Sort by id and take latest position
+        positions = max(records, key=lambda x: x.get("id", 0)).get("positions", {})
+        daily_prices = {f"{symbol}_price": price for symbol, price in last_close.items()}
+        daily_values[date] = calculate_portfolio_value(positions, daily_prices, positions.get("CASH", 0.0))
     
     return daily_values
 
 
-def calculate_daily_returns(portfolio_values: Dict[str, float]) -> List[float]:
+def calculate_daily_returns(portfolio_values: dict[str, float]) -> list[float]:
     """
     Calculate daily returns
     
@@ -223,7 +205,7 @@ def calculate_daily_returns(portfolio_values: Dict[str, float]) -> List[float]:
     return returns
 
 
-def calculate_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.02) -> float:
+def calculate_sharpe_ratio(returns: list[float], risk_free_rate: float = 0.02) -> float:
     """
     Calculate Sharpe ratio
     
@@ -256,7 +238,7 @@ def calculate_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.02) -
     return sharpe_ratio
 
 
-def calculate_max_drawdown(portfolio_values: Dict[str, float]) -> Tuple[float, str, str]:
+def calculate_max_drawdown(portfolio_values: dict[str, float]) -> tuple[float, str, str]:
     """
     Calculate maximum drawdown
     
@@ -279,12 +261,12 @@ def calculate_max_drawdown(portfolio_values: Dict[str, float]) -> Tuple[float, s
     drawdown_start_date = ""
     drawdown_end_date = ""
     
-    for i, (date, value) in enumerate(zip(sorted_dates, values)):
+    for date, value in zip(sorted_dates, values, strict=True):
         if value > peak_value:
             peak_value = value
             peak_date = date
         
-        drawdown = (peak_value - value) / peak_value
+        drawdown = (peak_value - value) / peak_value if peak_value > 0 else 0.0
         if drawdown > max_drawdown:
             max_drawdown = drawdown
             drawdown_start_date = peak_date
@@ -293,7 +275,7 @@ def calculate_max_drawdown(portfolio_values: Dict[str, float]) -> Tuple[float, s
     return max_drawdown, drawdown_start_date, drawdown_end_date
 
 
-def calculate_cumulative_return(portfolio_values: Dict[str, float]) -> float:
+def calculate_cumulative_return(portfolio_values: dict[str, float]) -> float:
     """
     Calculate cumulative return
     
@@ -318,7 +300,7 @@ def calculate_cumulative_return(portfolio_values: Dict[str, float]) -> float:
     return cumulative_return
 
 
-def calculate_annualized_return(portfolio_values: Dict[str, float]) -> float:
+def calculate_annualized_return(portfolio_values: dict[str, float]) -> float:
     """
     Calculate annualized return
     
@@ -326,7 +308,8 @@ def calculate_annualized_return(portfolio_values: Dict[str, float]) -> float:
         portfolio_values: Daily portfolio value dictionary
     
     Returns:
-        Annualized return
+        Annualized return; 0.0 when it cannot be computed (no history, a zero starting value,
+        a zero-length period, or a move so large over so short a time that it overflows a float)
     """
     if not portfolio_values:
         return 0.0
@@ -339,22 +322,29 @@ def calculate_annualized_return(portfolio_values: Dict[str, float]) -> float:
     if initial_value == 0:
         return 0.0
     
-    # Calculate investment days
-    start_date = datetime.strptime(sorted_dates[0], "%Y-%m-%d")
-    end_date = datetime.strptime(sorted_dates[-1], "%Y-%m-%d")
-    days = (end_date - start_date).days
-    
-    if days == 0:
+    # Calculate investment days (the dates are days, or timestamps for an hourly run)
+    start_date = parse_moment(sorted_dates[0])
+    end_date = parse_moment(sorted_dates[-1])
+    if start_date is None or end_date is None:
+        return 0.0
+    days = (end_date - start_date).total_seconds() / 86400
+
+    if days <= 0:
         return 0.0
     
     # Calculate annualized return
     total_return = (final_value - initial_value) / initial_value
-    annualized_return = (1 + total_return) ** (365 / days) - 1
-    
+    try:
+        annualized_return = (1 + total_return) ** (365 / days) - 1
+    except OverflowError:
+        # A big move over a few hours extrapolates past what a float holds; there is no
+        # meaningful annual figure for it, and the report must not crash (or write Infinity).
+        return 0.0
+
     return annualized_return
 
 
-def calculate_volatility(returns: List[float]) -> float:
+def calculate_volatility(returns: list[float]) -> float:
     """
     Calculate annualized volatility
     
@@ -376,7 +366,7 @@ def calculate_volatility(returns: List[float]) -> float:
     return annualized_volatility
 
 
-def calculate_win_rate(returns: List[float]) -> float:
+def calculate_win_rate(returns: list[float]) -> float:
     """
     Calculate win rate
     
@@ -395,7 +385,7 @@ def calculate_win_rate(returns: List[float]) -> float:
     return positive_days / total_days
 
 
-def calculate_profit_loss_ratio(returns: List[float]) -> float:
+def calculate_profit_loss_ratio(returns: list[float]) -> float:
     """
     Calculate profit/loss ratio
     
@@ -423,7 +413,7 @@ def calculate_profit_loss_ratio(returns: List[float]) -> float:
     return avg_profit / avg_loss
 
 
-def calculate_all_metrics(signature: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, any]:
+def calculate_all_metrics(signature: str, start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
     """
     Calculate all performance metrics
     
@@ -519,7 +509,7 @@ def calculate_all_metrics(signature: str, start_date: Optional[str] = None, end_
     }
 
 
-def print_performance_report(metrics: Dict[str, any]) -> None:
+def print_performance_report(metrics: dict[str, Any]) -> None:
     """
     Print performance report
     
@@ -590,15 +580,14 @@ def get_next_id(filepath: Path) -> int:
             try:
                 data = json.loads(line)
                 current_id = data.get("id", -1)
-                if current_id > max_id:
-                    max_id = current_id
+                max_id = max(max_id, current_id)
             except Exception:
                 continue
     
     return max_id + 1
 
 
-def save_metrics_to_jsonl(metrics: Dict[str, any], signature: str, output_dir: Optional[str] = None) -> str:
+def save_metrics_to_jsonl(metrics: dict[str, Any], signature: str, output_dir: str | None = None) -> str:
     """
     Incrementally save metrics to JSONL format
     
@@ -610,10 +599,8 @@ def save_metrics_to_jsonl(metrics: Dict[str, any], signature: str, output_dir: O
     Returns:
         Path to saved file
     """
-    base_dir = Path(__file__).resolve().parents[1]
-    
     if output_dir is None:
-        output_dir = base_dir / "data" / "agent_data" / signature / "metrics"
+        output_dir = agent_dir(signature) / "metrics"
     else:
         output_dir = Path(output_dir)
     
@@ -674,7 +661,7 @@ def save_metrics_to_jsonl(metrics: Dict[str, any], signature: str, output_dir: O
     return str(filepath)
 
 
-def get_latest_metrics(signature: str, output_dir: Optional[str] = None) -> Optional[Dict[str, any]]:
+def get_latest_metrics(signature: str, output_dir: str | None = None) -> dict[str, Any] | None:
     """
     Get latest performance metrics record
     
@@ -685,10 +672,8 @@ def get_latest_metrics(signature: str, output_dir: Optional[str] = None) -> Opti
     Returns:
         Latest metrics record, or None if no records exist
     """
-    base_dir = Path(__file__).resolve().parents[1]
-    
     if output_dir is None:
-        output_dir = base_dir / "data" / "agent_data" / signature / "metrics"
+        output_dir = agent_dir(signature) / "metrics"
     else:
         output_dir = Path(output_dir)
     
@@ -716,7 +701,7 @@ def get_latest_metrics(signature: str, output_dir: Optional[str] = None) -> Opti
     return latest_record
 
 
-def get_metrics_history(signature: str, output_dir: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, any]]:
+def get_metrics_history(signature: str, output_dir: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
     """
     Get performance metrics history
     
@@ -728,10 +713,8 @@ def get_metrics_history(signature: str, output_dir: Optional[str] = None, limit:
     Returns:
         List of metrics records, sorted by ID
     """
-    base_dir = Path(__file__).resolve().parents[1]
-    
     if output_dir is None:
-        output_dir = base_dir / "data" / "agent_data" / signature / "metrics"
+        output_dir = agent_dir(signature) / "metrics"
     else:
         output_dir = Path(output_dir)
     
@@ -762,7 +745,7 @@ def get_metrics_history(signature: str, output_dir: Optional[str] = None, limit:
     return records
 
 
-def print_metrics_summary(signature: str, output_dir: Optional[str] = None) -> None:
+def print_metrics_summary(signature: str, output_dir: str | None = None) -> None:
     """
     Print performance metrics summary
     
@@ -810,7 +793,7 @@ def print_metrics_summary(signature: str, output_dir: Optional[str] = None) -> N
             print(f"{record['id']:2d} | {timestamp} | {metrics['cumulative_return']:8.2%} | {metrics['annualized_return']:8.2%} | {metrics['sharpe_ratio']:8.4f}")
 
 
-def calculate_and_save_metrics(signature: str, start_date: Optional[str] = None, end_date: Optional[str] = None, output_dir: Optional[str] = None, print_report: bool = True) -> Dict[str, any]:
+def calculate_and_save_metrics(signature: str, start_date: str | None = None, end_date: str | None = None, output_dir: str | None = None, print_report: bool = True) -> dict[str, Any]:
     """
     Entry function to calculate all metrics and save in JSONL format
     
@@ -869,13 +852,9 @@ def calculate_and_save_metrics(signature: str, start_date: Optional[str] = None,
 
 
 if __name__ == "__main__":
-    # Test code
-    # 测试代码
-    signature = get_config_value("SIGNATURE")
-    if signature is None:
-        print("错误: 未设置 SIGNATURE 环境变量")
-        print("请设置环境变量 SIGNATURE，例如: export SIGNATURE=claude-3.7-sonnet")
+    # Usage: SIGNATURE=claude-3.7-sonnet python tools/result_tools.py
+    signature = os.environ.get("SIGNATURE")
+    if not signature:
+        print("SIGNATURE is not set. Set it to the agent whose results you want, for example: export SIGNATURE=claude-3.7-sonnet")
         sys.exit(1)
-    
-    # 使用入口函数计算和保存指标
-    result = calculate_and_save_metrics(signature)
+    calculate_and_save_metrics(signature)

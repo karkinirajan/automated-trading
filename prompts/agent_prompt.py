@@ -1,7 +1,5 @@
 import os
 import sys
-from pathlib import Path
-from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -13,12 +11,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from tools.constants import NASDAQ_100_SYMBOLS
+from tools.general_tools import get_config_value
 from tools.price_tools import (
     get_open_prices,
     get_today_init_position,
     get_yesterday_open_and_close_price,
 )
-from tools.general_tools import get_config_value
 
 # Re-export for backwards compatibility
 all_nasdaq_100_symbols = NASDAQ_100_SYMBOLS

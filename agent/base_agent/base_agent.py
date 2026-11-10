@@ -3,28 +3,31 @@ BaseAgent class - Base class for trading agents
 Encapsulates core functionality including MCP tool management, AI agent creation, and trading execution
 """
 
-import os
-import json
 import asyncio
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from pathlib import Path
-
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
-from dotenv import load_dotenv
+import json
+import os
 
 # Allow running this file directly from a subdirectory
 import sys
+from datetime import datetime, timedelta
+from typing import Any
+
+from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_openai import ChatOpenAI
+
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from prompts.agent_prompt import STOP_SIGNAL, get_agent_system_prompt
+from tools.agent_context import AGENT_HEADER
 from tools.constants import NASDAQ_100_SYMBOLS
 from tools.general_tools import extract_conversation, extract_tool_messages, get_config_value, write_config_value
+from tools.paths import safe_signature
+from tools.price_access import parse_moment
 from tools.price_tools import add_no_trade_record
-from prompts.agent_prompt import get_agent_system_prompt, STOP_SIGNAL
 
 # Load environment variables
 load_dotenv()
@@ -48,14 +51,14 @@ class BaseAgent:
         self,
         signature: str,
         basemodel: str,
-        stock_symbols: Optional[List[str]] = None,
-        mcp_config: Optional[Dict[str, Dict[str, Any]]] = None,
-        log_path: Optional[str] = None,
+        stock_symbols: list[str] | None = None,
+        mcp_config: dict[str, dict[str, Any]] | None = None,
+        log_path: str | None = None,
         max_steps: int = 10,
         max_retries: int = 3,
         base_delay: float = 0.5,
-        openai_base_url: Optional[str] = None,
-        openai_api_key: Optional[str] = None,
+        openai_base_url: str | None = None,
+        openai_api_key: str | None = None,
         initial_cash: float = 10000.0,
         init_date: str = "2025-10-13"
     ):
@@ -76,7 +79,7 @@ class BaseAgent:
             initial_cash: Initial cash amount
             init_date: Initialization date
         """
-        self.signature = signature
+        self.signature = safe_signature(signature)
         self.basemodel = basemodel
         self.stock_symbols = stock_symbols or self.DEFAULT_STOCK_SYMBOLS
         self.max_steps = max_steps
@@ -86,49 +89,55 @@ class BaseAgent:
         self.init_date = init_date
         
         # Set MCP configuration
-        self.mcp_config = mcp_config or self._get_default_mcp_config()
+        self.mcp_config = self._with_agent_header(mcp_config or self._get_default_mcp_config())
         
         # Set log path
         self.base_log_path = log_path or "./data/agent_data"
         
         # Set OpenAI configuration
-        if openai_base_url==None:
+        if openai_base_url is None:
             self.openai_base_url = os.getenv("OPENAI_API_BASE")
         else:
             self.openai_base_url = openai_base_url
-        if openai_api_key==None:
+        if openai_api_key is None:
             self.openai_api_key = os.getenv("OPENAI_API_KEY")
         else:
             self.openai_api_key = openai_api_key
         
         # Initialize components
-        self.client: Optional[MultiServerMCPClient] = None
-        self.tools: Optional[List] = None
-        self.model: Optional[ChatOpenAI] = None
-        self.agent: Optional[Any] = None
+        self.client: MultiServerMCPClient | None = None
+        self.tools: list | None = None
+        self.model: ChatOpenAI | None = None
+        self.agent: Any | None = None
         
         # Data paths
         self.data_path = os.path.join(self.base_log_path, self.signature)
         self.position_file = os.path.join(self.data_path, "position", "position.jsonl")
         
-    def _get_default_mcp_config(self) -> Dict[str, Dict[str, Any]]:
+    def _with_agent_header(self, config: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """A copy of the MCP connection settings in which every connection names this agent in a header.
+
+        The tool servers are shared by all models, so this header is how a server knows whose account, date and settings a call is for."""
+        return {name: {**connection, "headers": {**(connection.get("headers") or {}), AGENT_HEADER: self.signature}} for name, connection in config.items()}
+
+    def _get_default_mcp_config(self) -> dict[str, dict[str, Any]]:
         """Get default MCP configuration"""
         return {
             "math": {
                 "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('MATH_HTTP_PORT', '8000')}/mcp",
+                "url": f"http://127.0.0.1:{os.getenv('MATH_HTTP_PORT', '8000')}/mcp",
             },
             "stock_local": {
                 "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('GETPRICE_HTTP_PORT', '8003')}/mcp",
+                "url": f"http://127.0.0.1:{os.getenv('GETPRICE_HTTP_PORT', '8003')}/mcp",
             },
             "search": {
                 "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('SEARCH_HTTP_PORT', '8001')}/mcp",
+                "url": f"http://127.0.0.1:{os.getenv('SEARCH_HTTP_PORT', '8001')}/mcp",
             },
             "trade": {
                 "transport": "streamable_http",
-                "url": f"http://localhost:{os.getenv('TRADE_HTTP_PORT', '8002')}/mcp",
+                "url": f"http://127.0.0.1:{os.getenv('TRADE_HTTP_PORT', '8002')}/mcp",
             },
         }
     
@@ -158,7 +167,7 @@ class BaseAgent:
                 f"❌ Failed to initialize MCP client: {e}\n"
                 f"   Please ensure MCP services are running at the configured ports.\n"
                 f"   Run: python agent_tools/start_mcp_services.py"
-            )
+            ) from e
         
         try:
             # Create AI model
@@ -170,7 +179,7 @@ class BaseAgent:
                 timeout=30
             )
         except Exception as e:
-            raise RuntimeError(f"❌ Failed to initialize AI model: {e}")
+            raise RuntimeError(f"❌ Failed to initialize AI model: {e}") from e
         
         # Note: agent will be created in run_trading_session() based on specific date
         # because system_prompt needs the current date and price information
@@ -184,7 +193,7 @@ class BaseAgent:
             os.makedirs(log_path)
         return os.path.join(log_path, "log.jsonl")
     
-    def _log_message(self, log_file: str, new_messages: List[Dict[str, str]]) -> None:
+    def _log_message(self, log_file: str, new_messages: list[dict[str, str]]) -> None:
         """Log messages to log file"""
         log_entry = {
             # "timestamp": datetime.now().isoformat(),
@@ -194,7 +203,7 @@ class BaseAgent:
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
     
-    async def _ainvoke_with_retry(self, message: List[Dict[str, str]]) -> Any:
+    async def _ainvoke_with_retry(self, message: list[dict[str, str]]) -> Any:
         """Agent invocation with retry"""
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -246,7 +255,7 @@ class BaseAgent:
                 response = await self._ainvoke_with_retry(message)
                 
                 # Extract agent response
-                agent_response = extract_conversation(response, "final")
+                agent_response = extract_conversation(response, "final") or ""  # a model turn with no text is not a stop signal
                 
                 # Check stop signal
                 if STOP_SIGNAL in agent_response:
@@ -257,7 +266,7 @@ class BaseAgent:
                 
                 # Extract tool messages
                 tool_msgs = extract_tool_messages(response)
-                tool_response = '\n'.join([msg.content for msg in tool_msgs])
+                tool_response = '\n'.join([str(msg.content) for msg in tool_msgs if msg.content is not None])
                 
                 # Prepare new messages
                 new_messages = [
@@ -295,84 +304,78 @@ class BaseAgent:
                 raise
             write_config_value("IF_TRADE", False)
     
-    def register_agent(self) -> None:
-        """Register new agent, create initial positions"""
-        # Check if position.jsonl file already exists
-        if os.path.exists(self.position_file):
+    def _last_recorded_moment(self) -> datetime | None:
+        """The latest date (or date and time) in this agent's position file; None when it has no records.
+
+        A damaged record raises rather than being skipped: resuming from the wrong date would trade the same day twice."""
+        if not os.path.exists(self.position_file):
+            return None
+        latest: datetime | None = None
+        with open(self.position_file, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                moment = parse_moment(json.loads(line)["date"])
+                if moment is None:
+                    raise ValueError(f"Unreadable date in {self.position_file}: {line.strip()[:100]}")
+                if latest is None or moment > latest:
+                    latest = moment
+        return latest
+
+    def register_agent(self, opening_date: str | None = None) -> None:
+        """Register a new agent: create its position file with the starting cash, dated `opening_date` (default: the agent's init_date)."""
+        if self._last_recorded_moment() is not None:
             print(f"⚠️ Position file {self.position_file} already exists, skipping registration")
             return
-        
+
         # Ensure directory structure exists
         position_dir = os.path.join(self.data_path, "position")
         if not os.path.exists(position_dir):
             os.makedirs(position_dir)
             print(f"📁 Created position directory: {position_dir}")
-        
+
         # Create initial positions
         init_position = {symbol: 0 for symbol in self.stock_symbols}
         init_position['CASH'] = self.initial_cash
-        
-        with open(self.position_file, "w") as f:  # Use "w" mode to ensure creating new file
+
+        with open(self.position_file, "w", encoding="utf-8") as f:  # "w": also replaces a file that exists but holds no records
             f.write(json.dumps({
-                "date": self.init_date, 
-                "id": 0, 
+                "date": opening_date or self.init_date,
+                "id": 0,
                 "positions": init_position
             }) + "\n")
-        
+
         print(f"✅ Agent {self.signature} registration completed")
         print(f"📁 Position file: {self.position_file}")
         print(f"💰 Initial cash: ${self.initial_cash}")
         print(f"📊 Number of stocks: {len(self.stock_symbols)}")
-    
-    def get_trading_dates(self, init_date: str, end_date: str) -> List[str]:
+
+    def get_trading_dates(self, init_date: str, end_date: str) -> list[str]:
         """
-        Get trading date list
-        
+        Get the weekdays still to trade: after the last recorded date (or after `init_date` for a new agent) up to `end_date`.
+
         Args:
-            init_date: Start date
-            end_date: End date
-            
+            init_date: Start date (YYYY-MM-DD); a new agent is registered with it as its opening date
+            end_date: End date (YYYY-MM-DD)
+
         Returns:
             List of trading dates
         """
-        dates = []
-        max_date = None
-        
-        if not os.path.exists(self.position_file):
-            self.register_agent()
-            max_date = init_date
-        else:
-            # Read existing position file, find latest date
-            with open(self.position_file, "r") as f:
-                for line in f:
-                    doc = json.loads(line)
-                    current_date = doc['date']
-                    if max_date is None:
-                        max_date = current_date
-                    else:
-                        current_date_obj = datetime.strptime(current_date, "%Y-%m-%d")
-                        max_date_obj = datetime.strptime(max_date, "%Y-%m-%d")
-                        if current_date_obj > max_date_obj:
-                            max_date = current_date
-        
-        # Check if new dates need to be processed
-        max_date_obj = datetime.strptime(max_date, "%Y-%m-%d")
-        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-        
-        if end_date_obj <= max_date_obj:
-            return []
-        
-        # Generate trading date list
+        if self._last_recorded_moment() is None:
+            self.register_agent(init_date)
+        last = self._last_recorded_moment()
+        assert last is not None  # registered just above
+        last_day = datetime.combine(last.date(), datetime.min.time())
+        end_day = datetime.strptime(end_date, "%Y-%m-%d")
+
         trading_dates = []
-        current_date = max_date_obj + timedelta(days=1)
-        
-        while current_date <= end_date_obj:
+        current_date = last_day + timedelta(days=1)
+        while current_date <= end_day:
             if current_date.weekday() < 5:  # Weekdays
                 trading_dates.append(current_date.strftime("%Y-%m-%d"))
             current_date += timedelta(days=1)
-        
         return trading_dates
-    
+
     async def run_with_retry(self, today_date: str) -> None:
         """Run method with retry"""
         for attempt in range(1, self.max_retries + 1):
@@ -405,7 +408,7 @@ class BaseAgent:
         trading_dates = self.get_trading_dates(init_date, end_date)
         
         if not trading_dates:
-            print(f"ℹ️ No trading days to process")
+            print("ℹ️ No trading days to process")
             return
         
         print(f"📊 Trading days to process: {trading_dates}")
@@ -427,15 +430,16 @@ class BaseAgent:
         
         print(f"✅ {self.signature} processing completed")
     
-    def get_position_summary(self) -> Dict[str, Any]:
+    def get_position_summary(self) -> dict[str, Any]:
         """Get position summary"""
         if not os.path.exists(self.position_file):
             return {"error": "Position file does not exist"}
         
         positions = []
-        with open(self.position_file, "r") as f:
+        with open(self.position_file, encoding="utf-8") as f:
             for line in f:
-                positions.append(json.loads(line))
+                if line.strip():
+                    positions.append(json.loads(line))
         
         if not positions:
             return {"error": "No position records"}
