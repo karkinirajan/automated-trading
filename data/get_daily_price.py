@@ -1,45 +1,21 @@
-import requests
-import os
-from dotenv import load_dotenv
-load_dotenv()
 import json
 
+from alphavantage import DATA_DIR, fetch_series
 
-all_nasdaq_100_symbols = [
-    "NVDA", "MSFT", "AAPL", "GOOG", "GOOGL", "AMZN", "META", "AVGO", "TSLA",
-    "NFLX", "PLTR", "COST", "ASML", "AMD", "CSCO", "AZN", "TMUS", "MU", "LIN",
-    "PEP", "SHOP", "APP", "INTU", "AMAT", "LRCX", "PDD", "QCOM", "ARM", "INTC",
-    "BKNG", "AMGN", "TXN", "ISRG", "GILD", "KLAC", "PANW", "ADBE", "HON",
-    "CRWD", "CEG", "ADI", "ADP", "DASH", "CMCSA", "VRTX", "MELI", "SBUX",
-    "CDNS", "ORLY", "SNPS", "MSTR", "MDLZ", "ABNB", "MRVL", "CTAS", "TRI",
-    "MAR", "MNST", "CSX", "ADSK", "PYPL", "FTNT", "AEP", "WDAY", "REGN", "ROP",
-    "NXPI", "DDOG", "AXON", "ROST", "IDXX", "EA", "PCAR", "FAST", "EXC", "TTWO",
-    "XEL", "ZS", "PAYX", "WBD", "BKR", "CPRT", "CCEP", "FANG", "TEAM", "CHTR",
-    "KDP", "MCHP", "GEHC", "VRSK", "CTSH", "CSGP", "KHC", "ODFL", "DXCM", "TTD",
-    "ON", "BIIB", "LULU", "CDW", "GFS"
-]
+from tools.constants import NASDAQ_100_SYMBOLS
 
-def get_daily_price(SYMBOL: str):
-    FUNCTION = "TIME_SERIES_DAILY"
-    OUTPUTSIZE = 'compact'
-    APIKEY = os.getenv("ALPHAADVANTAGE_API_KEY")
-    url = f'https://www.alphavantage.co/query?function={FUNCTION}&symbol={SYMBOL}&outputsize={OUTPUTSIZE}&apikey={APIKEY}'
-    r = requests.get(url)
-    data = r.json()
-    print(data)
-    if data.get('Note') is not None or data.get('Information') is not None:
-        print(f"Error")
-        return
-    with open(f'./daily_prices_{SYMBOL}.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    if SYMBOL == "QQQ":
-        with open(f'./Adaily_prices_{SYMBOL}.json', 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
 
+def get_daily_price(SYMBOL: str) -> bool:
+    """Download the daily series of one symbol into data/daily_prices_<SYMBOL>.json (QQQ is also saved as Adaily_prices_QQQ.json). False if it failed."""
+    data = fetch_series(function="TIME_SERIES_DAILY", symbol=SYMBOL, outputsize="compact")
+    if data is None:
+        return False
+    names = [f"daily_prices_{SYMBOL}.json"] + ([f"Adaily_prices_{SYMBOL}.json"] if SYMBOL == "QQQ" else [])
+    for name in names:
+        (DATA_DIR / name).write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+    return True
 
 
 if __name__ == "__main__":
-    for symbol in all_nasdaq_100_symbols:
-        get_daily_price(symbol)
-
-    get_daily_price("QQQ")
+    results = [get_daily_price(symbol) for symbol in [*NASDAQ_100_SYMBOLS, "QQQ"]]
+    print(f"{sum(results)} of {len(results)} symbols downloaded")

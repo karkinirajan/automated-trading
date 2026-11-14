@@ -5,13 +5,14 @@ Start all four MCP services: Math, Search, TradeTools, LocalPrices
 """
 
 import os
-import sys
-import time
 import signal
 import subprocess
-import threading
+import sys
+import time
 from pathlib import Path
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 _AGENT_TOOLS_DIR = Path(__file__).resolve().parent
@@ -126,7 +127,7 @@ class MCPServiceManager:
             result = sock.connect_ex(('localhost', port))
             sock.close()
             return result == 0
-        except:
+        except OSError:
             return False
     
     def start_all_services(self):
@@ -134,8 +135,8 @@ class MCPServiceManager:
         print("🚀 Starting MCP services...")
         print("=" * 50)
         
-        print(f"📊 Port configuration:")
-        for service_id, config in self.service_configs.items():
+        print("📊 Port configuration:")
+        for config in self.service_configs.values():
             print(f"  - {config['name']}: {config['port']}")
         
         print("\n🔄 Starting services...")
@@ -170,7 +171,7 @@ class MCPServiceManager:
     def print_service_info(self):
         """Print service information"""
         print("\n📋 Service information:")
-        for service_id, service in self.services.items():
+        for service in self.services.values():
             print(f"  - {service['name']}: http://localhost:{service['port']} (PID: {service['process'].pid})")
         
         print(f"\n📁 Log files location: {self.log_dir.absolute()}")
@@ -183,7 +184,7 @@ class MCPServiceManager:
                 time.sleep(1)
                 
                 # Check service status
-                for service_id, service in self.services.items():
+                for service in self.services.values():
                     if service['process'].poll() is not None:
                         print(f"\n⚠️  {service['name']} service stopped unexpectedly")
                         self.running = False
@@ -198,7 +199,7 @@ class MCPServiceManager:
         """Stop all services"""
         print("\n🛑 Stopping all services...")
         
-        for service_id, service in self.services.items():
+        for service in self.services.values():
             try:
                 service['process'].terminate()
                 service['process'].wait(timeout=5)
@@ -218,7 +219,6 @@ class MCPServiceManager:
         
         for service_id, config in self.service_configs.items():
             if service_id in self.services:
-                service = self.services[service_id]
                 if self.check_service_health(service_id):
                     print(f"✅ {config['name']} service running normally (Port: {config['port']})")
                 else:

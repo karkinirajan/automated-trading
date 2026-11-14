@@ -1,11 +1,10 @@
-from pathlib import Path
-import json
-from datetime import datetime
-from typing import Dict, Any
-from fastmcp import FastMCP
 import os
 import sys
+from typing import Any
+
 from dotenv import load_dotenv
+from fastmcp import FastMCP
+
 load_dotenv()
 
 mcp = FastMCP("LocalPrices")
@@ -15,32 +14,40 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from tools.general_tools import get_config_value
+from tools.agent_context import calling_agent  # noqa: E402
+from tools.general_tools import get_config_value  # noqa: E402
+from tools.price_access import lookup, parse_moment  # noqa: E402
+from tools.price_tools import _price_documents  # noqa: E402
+from tools.server import run_server  # noqa: E402
 
-def _workspace_data_path(filename: str) -> Path:
-    base_dir = Path(__file__).resolve().parents[1]
-    return base_dir / "data" / filename
+
+def _series_for(symbol: str, hourly: bool) -> dict[str, Any] | None:
+    """The time series of one symbol in the merged price file (its daily bars, or its hourly ones), or None."""
+    for found, series in _price_documents(None, "(60min)" if hourly else "(Daily)"):
+        if found == symbol:
+            return series
+    return None
 
 
-def _validate_date_daily(date_str: str) -> None:
-    try:
-        datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError as exc:
-        raise ValueError("date must be in YYYY-MM-DD format") from exc
+def _get(symbol: str, date: str, hourly: bool) -> dict[str, Any]:
+    if parse_moment(date) is None or (" " in date) != hourly:
+        message = "date must be in YYYY-MM-DD HH:MM:SS format" if hourly else "date must be in YYYY-MM-DD format"
+        return {"error": message, "symbol": symbol, "date": date}
+    series = _series_for(symbol, hourly)
+    if series is None:
+        return {"error": f"No records found for stock {symbol} in local data", "symbol": symbol, "date": date}
+    return lookup(series, symbol, date, get_config_value("TODAY_DATE"), hourly=hourly)
 
-def _validate_date_hourly(date_str: str) -> None:
-    try:
-        datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-    except ValueError as exc:
-        raise ValueError("date must be in YYYY-MM-DD HH:MM:SS format") from exc
 
 @mcp.tool()
-def get_price_local(symbol: str, date: str) -> Dict[str, Any]:
+def get_price_local(symbol: str, date: str) -> dict[str, Any]:
     """Read OHLCV data for specified stock and date. Get historical information for specified stock.
-    
+
     Automatically detects date format and calls appropriate function:
     - Daily data: YYYY-MM-DD format (e.g., '2025-10-30')
     - Hourly data: YYYY-MM-DD HH:MM:SS format (e.g., '2025-10-30 14:30:00')
+
+    Only the past is available: the open of the current day (or hour) is shown, the rest of it is not, and later dates are refused.
 
     Args:
         symbol: Stock symbol, e.g. 'IBM' or '600243.SHH'.
@@ -49,162 +56,19 @@ def get_price_local(symbol: str, date: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing symbol, date and ohlcv data.
     """
-    # Detect date format
-    result = None
-    if ' ' in date or 'T' in date:
-        # Contains time component, use hourly
-        result =  get_price_local_hourly(symbol, date)
-    else:
-        # Date only, use daily
-        result = get_price_local_daily(symbol, date)
-    
-    # log_file = get_config_value("LOG_FILE")
-    # signature = get_config_value("SIGNATURE")
-    
-    # log_entry = {
-    #     "signature": signature,
-    #     "new_messages": [{"role": "tool:get_price_local", "content": result}]
-    # }
-    # with open(log_file, "a", encoding="utf-8") as f:
-    #     f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-    
-    return result
+    with calling_agent():
+        return _get(symbol, date, hourly=(" " in date or "T" in date))
 
 
-
-def get_price_local_daily(symbol: str, date: str) -> Dict[str, Any]:
-    """Read OHLCV data for specified stock and date. Get historical information for specified stock.
-
-    Args:
-        symbol: Stock symbol, e.g. 'IBM' or '600243.SHH'.
-        date: Date in 'YYYY-MM-DD' format.
-
-    Returns:
-        Dictionary containing symbol, date and ohlcv data.
-    """
-    filename = "merged.jsonl"
-    try:
-        _validate_date_daily(date)
-    except ValueError as e:
-        return {"error": str(e), "symbol": symbol, "date": date}
-
-    data_path = _workspace_data_path(filename)
-    if not data_path.exists():
-        return {"error": f"Data file not found: {data_path}", "symbol": symbol, "date": date}
-
-    with data_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            doc = json.loads(line)
-            meta = doc.get("Meta Data", {})
-            if meta.get("2. Symbol") != symbol:
-                continue
-            series = doc.get("Time Series (Daily)", {})
-            day = series.get(date)
-            if day is None:
-                sample_dates = sorted(series.keys(), reverse=True)[:5]
-                return {
-                    "error": f"Data not found for date {date}. Please verify the date exists in data. Sample available dates: {sample_dates}",
-                    "symbol": symbol,
-                    "date": date
-                }
-            if date == get_config_value("TODAY_DATE"):
-                return {
-                    "symbol": symbol,
-                    "date": date,
-                    "ohlcv": {
-                        "open": day.get("1. buy price"),
-                        "high": "You can not get the current high price",
-                        "low": "You can not get the current low price", 
-                        "close": "You can not get the next close price",
-                        "volume": "You can not get the current volume",
-                    },
-                }
-            else:
-                return {
-                    "symbol": symbol,
-                    "date": date,
-                    "ohlcv": {
-                        "open": day.get("1. buy price"),
-                        "high": day.get("2. high"),
-                        "low": day.get("3. low"), 
-                        "close": day.get("4. sell price"),
-                        "volume": day.get("5. volume"),
-                    },
-                }
+def get_price_local_daily(symbol: str, date: str) -> dict[str, Any]:
+    """Daily OHLCV for a symbol and 'YYYY-MM-DD' date (see get_price_local)."""
+    return _get(symbol, date, hourly=False)
 
 
-    return {"error": f"No records found for stock {symbol} in local data", "symbol": symbol, "date": date}
-
-
-def get_price_local_hourly(symbol: str, date: str) -> Dict[str, Any]:
-    """Read OHLCV data for specified stock and date. Get historical information for specified stock.
-
-    Args:
-        symbol: Stock symbol, e.g. 'IBM' or '600243.SHH'.
-        date: Date in 'YYYY-MM-DD' format.
-
-    Returns:
-        Dictionary containing symbol, date and ohlcv data.
-    """
-    filename = "merged.jsonl"
-    try:
-        _validate_date_hourly(date)
-    except ValueError as e:
-        return {"error": str(e), "symbol": symbol, "date": date}
-
-    data_path = _workspace_data_path(filename)
-    if not data_path.exists():
-        return {"error": f"Data file not found: {data_path}", "symbol": symbol, "date": date}
-
-    with data_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            doc = json.loads(line)
-            meta = doc.get("Meta Data", {})
-            if meta.get("2. Symbol") != symbol:
-                continue
-            series = doc.get("Time Series (60min)", {})
-            day = series.get(date)
-            if day is None:
-                sample_dates = sorted(series.keys(), reverse=True)[:5]
-                return {
-                    "error": f"Data not found for date {date}. Please verify the date exists in data. Sample available dates: {sample_dates}",
-                    "symbol": symbol,
-                    "date": date
-                }
-            if date == get_config_value("TODAY_DATE"):
-                return {
-                    "symbol": symbol,
-                    "date": date,
-                    "ohlcv": {
-                        "open": day.get("1. buy price"),
-                        "high": "You can not get the current high price",
-                        "low": "You can not get the current low price", 
-                        "close": "You can not get the next close price",
-                        "volume": "You can not get the current volume",
-                    },
-                }
-            else:
-                return {
-                    "symbol": symbol,
-                    "date": date,
-                    "ohlcv": {
-                        "open": day.get("1. buy price"),
-                        "high": day.get("2. high"),
-                        "low": day.get("3. low"), 
-                        "close": day.get("4. sell price"),
-                        "volume": day.get("5. volume"),
-                    },
-                }
-
-    return {"error": f"No records found for stock {symbol} in local data", "symbol": symbol, "date": date}
+def get_price_local_hourly(symbol: str, date: str) -> dict[str, Any]:
+    """Hourly OHLCV for a symbol and 'YYYY-MM-DD HH:MM:SS' date (see get_price_local)."""
+    return _get(symbol, date, hourly=True)
 
 
 if __name__ == "__main__":
-    
-    port = int(os.getenv("GETPRICE_HTTP_PORT", "8003"))
-    mcp.run(transport="streamable-http", port=port)
-
+    run_server(mcp, "GETPRICE_HTTP_PORT", 8003)

@@ -1,62 +1,75 @@
 
-import os
 import json
-from pathlib import Path
+import os
 from typing import Any
+
 from dotenv import load_dotenv
+
+from tools.agent_context import runtime_env_path_override
+from tools.paths import agent_dir
+
 load_dotenv()
+
 
 def _resolve_runtime_env_path() -> str:
     """Resolve runtime env path. If RUNTIME_ENV_PATH is unset, fall back to
     per-signature default at data/agent_data/{SIGNATURE}/.runtime_env.json.
     """
+    override = runtime_env_path_override()  # a tool call on behalf of a named agent (see tools/agent_context.py)
+    if override:
+        return override
     path = os.environ.get("RUNTIME_ENV_PATH")
     if not path:
         signature = os.environ.get("SIGNATURE")
         if signature:
-            base_dir = Path(__file__).resolve().parents[1]
-            default_path = base_dir / "data" / "agent_data" / signature / ".runtime_env.json"
+            folder = agent_dir(signature)  # raises ValueError for a signature that is not a plain folder name
             # Ensure parent exists but do not create file here
-            default_path.parent.mkdir(parents=True, exist_ok=True)
-            path = str(default_path)
+            folder.mkdir(parents=True, exist_ok=True)
+            path = str(folder / ".runtime_env.json")
             os.environ["RUNTIME_ENV_PATH"] = path
     return path or ""
 
 
 def _load_runtime_env() -> dict:
     path = _resolve_runtime_env_path()
-    if path is None:
+    if not path:
         return {}
     try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-    except Exception:
-        pass
-    return {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def get_config_value(key: str, default=None):
-    _RUNTIME_ENV = _load_runtime_env()
-    
-    if key in _RUNTIME_ENV:
-        return _RUNTIME_ENV[key]
+    runtime_env = _load_runtime_env()
+    if key in runtime_env:
+        return runtime_env[key]
     return os.getenv(key, default)
 
+
 def write_config_value(key: str, value: Any):
+    """Store one value in the runtime settings file. The file is replaced atomically, so a process reading it at the same moment sees the old or the new
+    contents, never half a file (which would read as "no settings")."""
     path = _resolve_runtime_env_path()
-    if path is None:
+    if not path:
         print(f"⚠️  WARNING: RUNTIME_ENV_PATH not set, config value '{key}' not persisted")
         return
-    _RUNTIME_ENV = _load_runtime_env()
-    _RUNTIME_ENV[key] = value
+    runtime_env = _load_runtime_env()
+    runtime_env[key] = value
+    temporary = f"{path}.{os.getpid()}.tmp"
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(_RUNTIME_ENV, f, ensure_ascii=False, indent=4)
-    except Exception as e:
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(runtime_env, f, ensure_ascii=False, indent=4)
+        os.replace(temporary, path)
+    except OSError as e:
         print(f"❌ Error writing config to {path}: {e}")
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+
 
 def extract_conversation(conversation: dict, output_type: str):
     """Extract information from a conversation payload.
